@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
-    "@openai/agents": "^0.0.0",
-    "openai": "^4.0.0"
+    "@openai/agents": "latest",
+    "openai": "latest"
   }
 }
