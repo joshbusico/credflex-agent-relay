@@ -9,8 +9,8 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /**
  * Deterministic "random" so:
- * - The same date produces the same topic/title (no repeats day-to-day)
- * - No database needed
+ * - Same date -> same topic choice (no DB needed)
+ * - Rotates topics day-to-day
  */
 function hashString(str) {
   let h = 2166136261;
@@ -21,17 +21,11 @@ function hashString(str) {
   return h >>> 0;
 }
 
-function mulberry32(seed) {
-  return function () {
-    let t = (seed += 0x6d2b79f5);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function getDateKey() {
-  // Use UTC date so it’s consistent for cron
+/**
+ * We use UTC date so Vercel cron is consistent.
+ * If you want Knoxville-local mornings, adjust the cron in vercel.json.
+ */
+function getDateKeyUTC() {
   const now = new Date();
   const y = now.getUTCFullYear();
   const m = String(now.getUTCMonth() + 1).padStart(2, "0");
@@ -41,8 +35,7 @@ function getDateKey() {
 
 /**
  * Topic bank
- * Add more anytime. The engine rotates by date so content stays fresh.
- * Each topic implies an "aha" angle that everyday people usually miss.
+ * Add more whenever you want. The selector rotates by day.
  */
 const TOPICS = [
   "Why paying off a card can drop your score",
@@ -77,70 +70,80 @@ const TOPICS = [
   "Rent reporting: when it helps and when it’s noise",
 ];
 
-const EMOJI_POOL = [
-  // growth / score
-  "📈", "📊", "📋", "🧮", "📑",
-  // power / drive
-  "💪", "🚀", "🔥", "⚡", "🧠",
-  // money / finance
-  "💳", "💵", "🏦", "💰",
-  // clarity / insight
-  "🤓", "👀", "💡", "🎯", "🧩",
-  // rebuild / reset
-  "🔄", "🏗️", "🧱", "🧭"
+/**
+ * Adds some variety even if you only have 30 topics:
+ * - Same index rotation
+ * - Plus a "spin" angle that changes by day
+ */
+const SPINS = [
+  "Explain it like I’m 12, then give the real reason.",
+  "Give a simple rule of thumb, then the exception that surprises people.",
+  "Call out the common advice that’s wrong, then replace it with the right move.",
+  "Use a short analogy, then the exact step-by-step action.",
+  "Focus on what changes in the scoring model vs what changes in reporting.",
+  "Contrast what people think happens vs what the bureaus actually do.",
+  "Give a quick 'do this today' checklist with 2 items max.",
+  "Frame it as 'why the system reacts this way' without sounding conspiratorial.",
 ];
 
-function pickDailyTopic(dateKey) {
-  const idx = hashString(dateKey) % TOPICS.length;
+function pickFromListByDate(list, dateKey, salt) {
+  const idx = hashString(`${salt}:${dateKey}`) % list.length;
+  return list[idx];
+}
+
+function pickTopicByDate(dateKey) {
+  const idx = hashString(`topic:${dateKey}`) % TOPICS.length;
   return TOPICS[idx];
 }
 
-function generateEmojiCombo(seedStr) {
-  const rng = mulberry32(hashString(seedStr));
-  const count = 2 + Math.floor(rng() * 3); // 2–4 emojis
-  const pool = [...EMOJI_POOL];
-
-  // Fisher-Yates shuffle using seeded rng
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
-  }
-
-  return pool.slice(0, count).join("");
-}
-
-function buildPrompt({ title, topic }) {
+function buildPrompt({ dateKey, topic, spin, yesterdayHint }) {
   const extraInstructions = process.env.CREDFLEX_INSTRUCTIONS || "";
 
   return `
-You are writing a 60-second vertical video script for a daily micro show.
+You are writing a single 60-second episode for a daily micro show.
 
-SHOW TITLE:
-${title}
+SHOW ID:
+date_key: ${dateKey}
+
+SHOW NAME:
+"Your Daily Credit-Flex Minute"
 
 FORMAT:
 - Two speakers in podcast style: HOST and EXPERT.
 - HOST tone: emotional, enthusiastic, motivational (Tony/Mel Robbins energy).
-- EXPERT tone: anonymous, calm authority, zero fluff, straight truth.
-- Must include a clear "Aha!" moment that most everyday people don't know.
-- Must be non-repetitive and feel like a fresh episode.
+- EXPERT tone: anonymous, calm authority, no fluff, direct truth.
+- Must include a clear Aha! moment that everyday people usually don't know.
 
 TOPIC FOR TODAY:
 ${topic}
 
-CONTENT RULES:
-- Strong but not reckless framing is allowed.
-  Use at most ONE strong line like: "The credit industry profits from confusion."
-  And ONE moderate line like: "The system isn't designed for you."
-- No shaming. No fearmongering. No legal advice.
+SPIN FOR VARIETY (follow it):
+${spin}
+
+NON-REPETITION RULES (IMPORTANT):
+- Must feel like a fresh episode with a fresh angle.
+- Avoid generic filler intros like "today we’re talking about..." unless it’s genuinely punchy and unique.
+- Do not reuse exact phrasing from yesterday (assume yesterday was roughly about: ${yesterdayHint}).
+
+FRAMING RULES:
+- Use at most ONE strong line like: "The credit industry profits from confusion."
+- And ONE moderate line like: "The system isn't designed for you."
+- No shaming. No fearmongering. No legal advice. No “hire me” vibes.
 - Clear, practical explanation + 1–2 actionable steps someone can do today.
-- Keep it under ~150 spoken words if possible (tight, punchy).
+- Keep it tight: ~140–170 spoken words.
+
+TITLE RULES (IMPORTANT):
+- The "title" must start exactly with: "Your Daily Credit-Flex Minute"
+- Then append 1–3 relevant emojis at the end.
+- Emojis must be relevant to the topic and must feel varied day-to-day.
+- Do not repeat the same emoji twice.
 
 CTA RULES (IMPORTANT):
-- DO NOT include any link in the script.
+- DO NOT include any link in the script, hook, or CTA.
 - CTA must be a statement, not a question.
-- Use this CTA pattern near the end:
+- Use this exact CTA pattern near the end:
   "The free CredFlex app that addresses this is releasing soon. Comment FIX and I’ll reply with the sign-up link."
+- Never mention a link unless the viewer comments FIX (so: no link text, no URL).
 
 OUTPUT:
 Return ONLY valid JSON with these keys:
@@ -158,53 +161,95 @@ ${extraInstructions}
 }
 
 export default async function handler(req, res) {
-  try {
-    // Cron will usually GET this endpoint.
-    if (req.method !== "GET" && req.method !== "POST") {
-      return res.status(405).json({ error: "Use GET or POST" });
+  // Basic method handling
+  if (req.method !== "GET" && req.method !== "POST") {
+    res.setHeader("Content-Type", "application/json");
+    return res.status(405).send(JSON.stringify({ error: "Use GET or POST" }, null, 2));
     }
 
-    const dateKey = getDateKey();
-    const topic = pickDailyTopic(dateKey);
-    const emojiCombo = generateEmojiCombo(`${dateKey}:${topic}`);
-    const title = `Your Daily Credit-Flex Minute ${emojiCombo}`;
+  try {
+    const dateKey = getDateKeyUTC();
+    const topic = pickTopicByDate(dateKey);
+    const spin = pickFromListByDate(SPINS, dateKey, "spin");
 
-    const prompt = buildPrompt({ title, topic });
+    // Give the model a hint to avoid repeating yesterday’s angle (not perfect but helpful).
+    // If you want this stronger, we can compute yesterday’s topic + spin and pass it in.
+    const yesterdayHint = pickTopicByDate(
+      (() => {
+        const dt = new Date();
+        dt.setUTCDate(dt.getUTCDate() - 1);
+        const y = dt.getUTCFullYear();
+        const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+        const d = String(dt.getUTCDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+      })()
+    );
+
+    const prompt = buildPrompt({ dateKey, topic, spin, yesterdayHint });
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
       temperature: 0.9,
       messages: [
-        { role: "system", content: "You write tight, high-converting short-form scripts." },
-        { role: "user", content: prompt }
+        {
+          role: "system",
+          content:
+            "You write tight, high-converting short-form scripts that sound human, punchy, and practical.",
+        },
+        { role: "user", content: prompt },
       ],
-      response_format: { type: "json_object" }
+      response_format: { type: "json_object" },
     });
 
     const raw = completion?.choices?.[0]?.message?.content || "{}";
+
     let data;
     try {
       data = JSON.parse(raw);
     } catch {
       data = {
-        title,
+        title: "Your Daily Credit-Flex Minute 💳",
         hook: "",
         script: raw,
         aha_moment: "",
         cta: "The free CredFlex app that addresses this is releasing soon. Comment FIX and I’ll reply with the sign-up link.",
-        topic
+        topic,
       };
     }
 
-    // Enforce title/topic so the engine stays consistent
-    data.title = title;
+    // Enforce topic stays consistent (title is model-controlled, per your request)
     data.topic = topic;
 
-    return res.status(200).json(data);
+    // Enforce CTA pattern and no link leakage
+    const forcedCTA =
+      "The free CredFlex app that addresses this is releasing soon. Comment FIX and I’ll reply with the sign-up link.";
+    data.cta = forcedCTA;
+
+    // If model accidentally inserts a link anywhere, hard-sanitize (simple guardrail)
+    const scrubLinks = (s) =>
+      typeof s === "string"
+        ? s.replace(/https?:\/\/\S+/gi, "").replace(/\bwww\.\S+/gi, "")
+        : s;
+
+    data.hook = scrubLinks(data.hook);
+    data.script = scrubLinks(data.script);
+    data.aha_moment = scrubLinks(data.aha_moment);
+    data.title = scrubLinks(data.title);
+
+    // Return pretty JSON (helps when you open in browser)
+    res.setHeader("Content-Type", "application/json");
+    return res.status(200).send(JSON.stringify(data, null, 2));
   } catch (err) {
-    return res.status(500).json({
-      error: "Server error",
-      message: err?.message || String(err)
-    });
+    res.setHeader("Content-Type", "application/json");
+    return res.status(500).send(
+      JSON.stringify(
+        {
+          error: "Server error",
+          message: err?.message || String(err),
+        },
+        null,
+        2
+      )
+    );
   }
 }
