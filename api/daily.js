@@ -138,6 +138,14 @@ TITLE RULES (IMPORTANT):
 - Emojis must be relevant to the topic and must feel varied day-to-day.
 - Do not repeat the same emoji twice.
 
+TRANSITION RULE (IMPORTANT):
+- Immediately before the CTA, include one short, empowering sentence that reinforces clarity, control, or confidence.
+- It should feel like an earned emotional shift, not a sales bridge.
+- Example tone (do not copy exactly):
+  "Now you understand the system instead of fearing it."
+  "When you know this, you move differently."
+  "Clarity changes how you play the game."
+
 CTA RULES (IMPORTANT):
 - DO NOT include any link in the script, hook, or CTA.
 - CTA must be a statement, not a question.
