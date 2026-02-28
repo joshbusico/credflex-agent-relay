@@ -1,16 +1,14 @@
 // api/daily.js
 import OpenAI from "openai";
 
-export const config = {
-  runtime: "nodejs",
-};
+export const config = { runtime: "nodejs" };
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /**
- * Deterministic "random" so:
- * - Same date -> same topic choice (no DB needed)
- * - Rotates topics day-to-day
+ * Deterministic rotation (no DB):
+ * - Same UTC date => same topic/spin
+ * - Different day => different topic/spin (reliable freshness)
  */
 function hashString(str) {
   let h = 2166136261;
@@ -21,21 +19,27 @@ function hashString(str) {
   return h >>> 0;
 }
 
-/**
- * We use UTC date so Vercel cron is consistent.
- * If you want Knoxville-local mornings, adjust the cron in vercel.json.
- */
-function getDateKeyUTC() {
-  const now = new Date();
-  const y = now.getUTCFullYear();
-  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(now.getUTCDate()).padStart(2, "0");
+function getUTCDateKey(date = new Date()) {
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 
+function pickByDate(list, dateKey, salt) {
+  const idx = hashString(`${salt}:${dateKey}`) % list.length;
+  return list[idx];
+}
+
+function getYesterdayUTCDateKey() {
+  const dt = new Date();
+  dt.setUTCDate(dt.getUTCDate() - 1);
+  return getUTCDateKey(dt);
+}
+
 /**
- * Topic bank
- * Add more whenever you want. The selector rotates by day.
+ * Topics (rotate daily)
+ * Expand anytime.
  */
 const TOPICS = [
   "Why paying off a card can drop your score",
@@ -70,91 +74,115 @@ const TOPICS = [
   "Rent reporting: when it helps and when it’s noise",
 ];
 
-/**
- * Adds some variety even if you only have 30 topics:
- * - Same index rotation
- * - Plus a "spin" angle that changes by day
- */
 const SPINS = [
   "Explain it like I’m 12, then give the real reason.",
-  "Give a simple rule of thumb, then the exception that surprises people.",
-  "Call out the common advice that’s wrong, then replace it with the right move.",
-  "Use a short analogy, then the exact step-by-step action.",
-  "Focus on what changes in the scoring model vs what changes in reporting.",
+  "Give the common advice, then the exception that surprises people.",
+  "Call out the popular myth, then replace it with the correct move.",
+  "Use a simple analogy, then give a 2-step action plan.",
   "Contrast what people think happens vs what the bureaus actually do.",
-  "Give a quick 'do this today' checklist with 2 items max.",
-  "Frame it as 'why the system reacts this way' without sounding conspiratorial.",
+  "Focus on what changes in scoring vs what changes in reporting.",
+  "Give a quick 2-item checklist someone can do today.",
+  "Explain why the system reacts this way without sounding conspiratorial.",
 ];
 
-function pickFromListByDate(list, dateKey, salt) {
-  const idx = hashString(`${salt}:${dateKey}`) % list.length;
-  return list[idx];
+/**
+ * Guards
+ */
+function scrubLinks(s) {
+  if (typeof s !== "string") return s;
+  return s
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/\bwww\.\S+/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
-function pickTopicByDate(dateKey) {
-  const idx = hashString(`topic:${dateKey}`) % TOPICS.length;
-  return TOPICS[idx];
+function ensureExactly3EmojisAtEnd(title) {
+  if (typeof title !== "string") return title;
+
+  // Remove any links just in case
+  title = scrubLinks(title);
+
+  const prefix = "Your Daily Credit-Flex Minute";
+  if (!title.startsWith(prefix)) {
+    // Force the prefix if model drifted
+    title = `${prefix} ${title.replace(/^["']|["']$/g, "").trim()}`;
+  }
+
+  // Extract emojis (basic unicode emoji ranges; not perfect but works well)
+  const emojiRegex =
+    /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu;
+  const emojis = title.match(emojiRegex) || [];
+
+  // Remove all emojis from title body
+  const withoutEmojis = title.replace(emojiRegex, "").replace(/\s{2,}/g, " ").trim();
+
+  // Keep last 3 unique emojis
+  const unique = [];
+  for (const e of emojis) {
+    if (!unique.includes(e)) unique.push(e);
+  }
+  const last3 = unique.slice(-3);
+
+  // If not enough emojis, add safe defaults (varied but neutral)
+  while (last3.length < 3) last3.unshift("📈");
+  const finalEmojis = last3.slice(-3).join("");
+
+  return `${withoutEmojis} ${finalEmojis}`.trim();
 }
 
-function buildPrompt({ dateKey, topic, spin, yesterdayHint }) {
-  const extraInstructions = process.env.CREDFLEX_INSTRUCTIONS || "";
+function buildPrompt({ dateKey, topic, spin, yesterdayTopic }) {
+  const extra = process.env.CREDFLEX_INSTRUCTIONS || "";
 
+  // IMPORTANT: single, consistent ruleset.
+  // Also: host = calm authority, expert = enthusiastic Tony/Mel vibe.
   return `
-You are writing a single 60-second episode for a daily micro show.
+You are creating ONE 60-second episode for a daily micro show designed to drive comments and waitlist signups.
 
-SHOW ID:
-date_key: ${dateKey}
+SHOW NAME (must be exact):
+Your Daily Credit-Flex Minute
 
-SHOW NAME:
-"Your Daily Credit-Flex Minute"
+DATE KEY:
+${dateKey}
 
-FORMAT:
-- Two speakers in podcast style: HOST and EXPERT.
-- HOST tone: emotional, calm authority, no fluff, direct truth.
-- EXPERT tone: anonymous, enthusiastic, motivational (Tony/Mel Robbins energy).
-- Must include a clear Aha! moment that everyday people usually don't know.
-
-TOPIC FOR TODAY:
+TODAY'S TOPIC:
 ${topic}
 
-SPIN FOR VARIETY (follow it):
+YESTERDAY'S TOPIC (avoid repeating the same angle/phrasing):
+${yesterdayTopic}
+
+VARIATION SPIN (follow this):
 ${spin}
 
-NON-REPETITION RULES (IMPORTANT):
-- Must feel like a fresh episode with a fresh angle.
-- Avoid generic filler intros like "today we’re talking about..." unless it’s genuinely punchy and unique.
-- Do not reuse exact phrasing from yesterday (assume yesterday was roughly about: ${yesterdayHint}).
+CHARACTERS:
+- HOST: calm authority, anonymous expert vibe, grounded and clear.
+- EXPERT: emotional, enthusiastic, motivational (Tony/Mel Robbins energy). Urgent but not reckless.
 
-FRAMING RULES:
+STRUCTURE (must follow):
+1) Hook (1 sentence) that stops scrolling.
+2) Fast clarification of the misconception.
+3) AHA MOMENT (explicit, labeled as Aha!) that most people don’t know.
+4) 1–2 actionable steps (simple, concrete).
+5) TRANSITION LINE (1 sentence) that empowers the viewer (clarity/control/confidence).
+6) CTA (exact wording below).
+
+FRAMING LIMITS:
 - Use at most ONE strong line like: "The credit industry profits from confusion."
-- And ONE moderate line like: "The system isn't designed for you."
-- No shaming. No fearmongering. No legal advice. No “hire me” vibes.
-- Clear, practical explanation + 1–2 actionable steps someone can do today.
-- Keep it tight: ~140–170 spoken words.
+- Use at most ONE moderate line like: "The system isn't designed for you."
+- No shaming, no fearmongering, no legal advice, no "hire me" vibe.
 
-TITLE RULES (IMPORTANT):
-- The "title" must start exactly with: "Your Daily Credit-Flex Minute"
-- Then append 3 relevant emojis at the end.
-- Emojis must be relevant to the topic and must feel varied day-to-day.
-- Do not repeat the same emoji twice.
+TITLE RULES (strict):
+- title MUST start with exactly: "Your Daily Credit-Flex Minute"
+- title MUST end with exactly 3 relevant emojis
+- emojis must be relevant to the topic, varied day-to-day, and no repeating the same emoji twice
 
-TRANSITION RULE (IMPORTANT):
-- Immediately before the CTA, include one short, empowering sentence that reinforces clarity, control, or confidence.
-- It should feel like an earned emotional shift, not a sales bridge.
-- Example tone (do not copy exactly):
-  "Now you understand the system instead of fearing it."
-  "When you know this, you move differently."
-  "Clarity changes how you play the game."
-
-CTA RULES (IMPORTANT):
-- DO NOT include any link in the script, hook, or CTA.
+CTA RULES (strict):
+- DO NOT include any link anywhere.
 - CTA must be a statement, not a question.
-- Use this exact CTA pattern near the end:
-  "The free CredFlex X app that addresses this is releasing soon. Comment FIX and I’ll reply with the sign-up link."
-- Never mention a link unless the viewer comments FIX (so: no link text, no URL).
+- CTA must be EXACTLY:
+"The free CredFlex X app that addresses this is releasing soon. Comment FIX and I’ll reply with the sign-up link."
 
-OUTPUT:
-Return ONLY valid JSON with these keys:
+OUTPUT (return ONLY valid JSON):
 {
   "title": string,
   "hook": string,
@@ -164,36 +192,28 @@ Return ONLY valid JSON with these keys:
   "topic": string
 }
 
-${extraInstructions}
+${extra}
 `.trim();
 }
 
 export default async function handler(req, res) {
-  // Basic method handling
+  // Allow cron GET and manual POST
   if (req.method !== "GET" && req.method !== "POST") {
     res.setHeader("Content-Type", "application/json");
-    return res.status(405).send(JSON.stringify({ error: "Use GET or POST" }, null, 2));
-    }
+    return res
+      .status(405)
+      .send(JSON.stringify({ error: "Use GET or POST" }, null, 2));
+  }
 
   try {
-    const dateKey = getDateKeyUTC();
-    const topic = pickTopicByDate(dateKey);
-    const spin = pickFromListByDate(SPINS, dateKey, "spin");
+    const dateKey = getUTCDateKey();
+    const yesterdayKey = getYesterdayUTCDateKey();
 
-    // Give the model a hint to avoid repeating yesterday’s angle (not perfect but helpful).
-    // If you want this stronger, we can compute yesterday’s topic + spin and pass it in.
-    const yesterdayHint = pickTopicByDate(
-      (() => {
-        const dt = new Date();
-        dt.setUTCDate(dt.getUTCDate() - 1);
-        const y = dt.getUTCFullYear();
-        const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
-        const d = String(dt.getUTCDate()).padStart(2, "0");
-        return `${y}-${m}-${d}`;
-      })()
-    );
+    const topic = pickByDate(TOPICS, dateKey, "topic");
+    const spin = pickByDate(SPINS, dateKey, "spin");
+    const yesterdayTopic = pickByDate(TOPICS, yesterdayKey, "topic");
 
-    const prompt = buildPrompt({ dateKey, topic, spin, yesterdayHint });
+    const prompt = buildPrompt({ dateKey, topic, spin, yesterdayTopic });
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
@@ -202,7 +222,7 @@ export default async function handler(req, res) {
         {
           role: "system",
           content:
-            "You write tight, high-converting short-form scripts that sound human, punchy, and practical.",
+            "Write punchy, human, high-converting short-form dialogue. No corporate tone.",
         },
         { role: "user", content: prompt },
       ],
@@ -216,45 +236,39 @@ export default async function handler(req, res) {
       data = JSON.parse(raw);
     } catch {
       data = {
-        title: "Your Daily Credit-Flex Minute 💳",
+        title: "Your Daily Credit-Flex Minute 📈💳🧠",
         hook: "",
-        script: raw,
+        script: String(raw),
         aha_moment: "",
-        cta: "The free CredFlex app that addresses this is releasing soon. Comment FIX and I’ll reply with the sign-up link.",
+        cta:
+          "The free CredFlex X app that addresses this is releasing soon. Comment FIX and I’ll reply with the sign-up link.",
         topic,
       };
     }
 
-    // Enforce topic stays consistent (title is model-controlled, per your request)
+    // Server-enforced truth:
     data.topic = topic;
 
-    // Enforce CTA pattern and no link leakage
-    const forcedCTA =
-      "The free CredFlex app that addresses this is releasing soon. Comment FIX and I’ll reply with the sign-up link.";
-    data.cta = forcedCTA;
+    // Force exact CTA
+    data.cta =
+      "The free CredFlex X app that addresses this is releasing soon. Comment FIX and I’ll reply with the sign-up link.";
 
-    // If model accidentally inserts a link anywhere, hard-sanitize (simple guardrail)
-    const scrubLinks = (s) =>
-      typeof s === "string"
-        ? s.replace(/https?:\/\/\S+/gi, "").replace(/\bwww\.\S+/gi, "")
-        : s;
-
+    // Scrub links anywhere
+    data.title = scrubLinks(data.title);
     data.hook = scrubLinks(data.hook);
     data.script = scrubLinks(data.script);
     data.aha_moment = scrubLinks(data.aha_moment);
-    data.title = scrubLinks(data.title);
 
-    // Return pretty JSON (helps when you open in browser)
+    // Enforce title prefix + exactly 3 emojis at end
+    data.title = ensureExactly3EmojisAtEnd(data.title);
+
     res.setHeader("Content-Type", "application/json");
     return res.status(200).send(JSON.stringify(data, null, 2));
   } catch (err) {
     res.setHeader("Content-Type", "application/json");
     return res.status(500).send(
       JSON.stringify(
-        {
-          error: "Server error",
-          message: err?.message || String(err),
-        },
+        { error: "Server error", message: err?.message || String(err) },
         null,
         2
       )
