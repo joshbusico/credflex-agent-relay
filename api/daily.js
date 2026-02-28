@@ -110,8 +110,8 @@ SHOW NAME:
 
 FORMAT:
 - Two speakers in podcast style: HOST and EXPERT.
-- HOST tone: emotional, enthusiastic, motivational (Tony/Mel Robbins energy).
-- EXPERT tone: anonymous, calm authority, no fluff, direct truth.
+- HOST tone: emotional, calm authority, no fluff, direct truth.
+- EXPERT tone: anonymous, enthusiastic, motivational (Tony/Mel Robbins energy).
 - Must include a clear Aha! moment that everyday people usually don't know.
 
 TOPIC FOR TODAY:
@@ -134,7 +134,7 @@ FRAMING RULES:
 
 TITLE RULES (IMPORTANT):
 - The "title" must start exactly with: "Your Daily Credit-Flex Minute"
-- Then append 1–3 relevant emojis at the end.
+- Then append 3 relevant emojis at the end.
 - Emojis must be relevant to the topic and must feel varied day-to-day.
 - Do not repeat the same emoji twice.
 
@@ -150,7 +150,7 @@ CTA RULES (IMPORTANT):
 - DO NOT include any link in the script, hook, or CTA.
 - CTA must be a statement, not a question.
 - Use this exact CTA pattern near the end:
-  "The free CredFlex app that addresses this is releasing soon. Comment FIX and I’ll reply with the sign-up link."
+  "The free CredFlex X app that addresses this is releasing soon. Comment FIX and I’ll reply with the sign-up link."
 - Never mention a link unless the viewer comments FIX (so: no link text, no URL).
 
 OUTPUT:
